@@ -4,15 +4,19 @@ import (
 	"log"
 	"time"
 
-	"encoding/csv"
-	"fmt"
 	"os/exec"
-	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
+
+/*
+
+	Allgemeine Tips:
+		* Der Typ Exporter und seine Methoden würde ich der Übersicht halber gruppieren. Typische Anordnung: Typ, Konstruktor, Methoden
+		* Das Parsen würde ich noch ein bisschen auslagern und ein paar Type einführen. Type wie [][]string sagen sehr wenig aus.
+
+*/
 
 type metric struct {
 	metricsname string
@@ -25,19 +29,19 @@ type metric struct {
 // of a ipmi node.
 type Exporter struct {
 	IpmiBinary   string
-	Waitgroup    *sync.WaitGroup
 	metrics      map[string]*prometheus.GaugeVec
 	duration     prometheus.Gauge
 	totalScrapes prometheus.Counter
 	namespace    string
+	replacer     *strings.Replacer
 }
 
 // NewExporter instantiates a new ipmi Exporter.
-func NewExporter(ipmiBinary string, wg *sync.WaitGroup) *Exporter {
+func NewExporter(ipmiBinary string, replacer *strings.Replacer) *Exporter {
 	e := Exporter{
 		IpmiBinary: ipmiBinary,
-		Waitgroup:  wg,
 		namespace:  "ipmi",
+		replacer:   replacer,
 		duration: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: *namespace,
 			Name:      "exporter_last_scrape_duration_seconds",
@@ -51,86 +55,25 @@ func NewExporter(ipmiBinary string, wg *sync.WaitGroup) *Exporter {
 	return &e
 }
 
-type error interface {
-	Error() string
-}
-
-func executeCommand(cmd string, wg *sync.WaitGroup) (string, error) {
+func executeCommand(cmd string) (string, error) {
 	parts := strings.Fields(cmd)
 	out, err := exec.Command(parts[0], parts[1]).Output()
-	if err != nil {
-		fmt.Println("error occured")
-		fmt.Printf("%s", err)
-	}
-	wg.Done()
 	return string(out), err
 }
 
-func convertValue(strfloat string, strunit string) (value float64, err error) {
-	if strfloat != "na" {
-		if strunit == "discrete" {
-			strfloat = strings.Replace(strfloat, "0x", "", -1)
-			parsedValue, err := strconv.ParseUint(strfloat, 16, 32)
-			if err != nil {
-				log.Printf("could not translate hex: %v, %v", parsedValue, err)
-			}
-			value = float64(parsedValue)
-		} else {
-			value, err = strconv.ParseFloat(strfloat, 64)
-		}
-	}
-	return value, err
-}
-
-func convertOutput(result [][]string) (metrics []metric, err error) {
-	for i := range result {
-		var value float64
-		var currentMetric metric
-
-		for n := range result[i] {
-			result[i][n] = strings.TrimSpace(result[i][n])
-		}
-		result[i][0] = strings.ToLower(result[i][0])
-		result[i][0] = strings.Replace(result[i][0], " ", "_", -1)
-		result[i][0] = strings.Replace(result[i][0], "-", "_", -1)
-		result[i][0] = strings.Replace(result[i][0], ".", "_", -1)
-
-		value, err = convertValue(result[i][1], result[i][2])
-		if err != nil {
-			log.Printf("could not parse ipmi output: %s", err)
-		}
-
-		currentMetric.value = value
-		currentMetric.unit = result[i][2]
-		currentMetric.metricsname = result[i][0]
-
-		metrics = append(metrics, currentMetric)
-	}
-	return metrics, err
-}
-
-func splitAoutput(output string) ([][]string, error) {
-
-	r := csv.NewReader(strings.NewReader(output))
-	r.Comma = '|'
-	r.Comment = '#'
-	result, err := r.ReadAll()
-	if err != nil {
-		log.Printf("could not parse ipmi output: %v", err)
-	}
-	return result, err
-}
-
 func createMetrics(e *Exporter, metric []metric) {
-	for n := range metric {
-		e.metrics[metric[n].metricsname] = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace:   "ipmi",
-			Name:        metric[n].metricsname,
-			Help:        metric[n].metricsname,
-			ConstLabels: map[string]string{"unit": metric[n].unit},
+	for _, m := range metric {
+		e.metrics[m.metricsname] = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: "ipmi",
+			Name:      m.metricsname,
+			Help:      m.metricsname,
+			ConstLabels: map[string]string{
+				"unit": m.unit,
+			},
 		}, []string{"addr"})
-		var labels prometheus.Labels = map[string]string{"addr": "localhost"}
-		e.metrics[metric[n].metricsname].With(labels).Set(metric[n].value)
+
+		labels := prometheus.Labels{"addr": "localhost"}
+		e.metrics[m.metricsname].With(labels).Set(m.value)
 	}
 }
 
@@ -154,20 +97,28 @@ func (e *Exporter) Collect(metrics chan<- prometheus.Metric) {
 }
 
 func (e *Exporter) collect() {
-	e.Waitgroup.Add(1)
-
 	now := time.Now().UnixNano()
 
-	output, err := executeCommand(e.IpmiBinary, e.Waitgroup)
+	output, err := executeCommand(e.IpmiBinary)
+	if err != nil {
+		log.Printf("Error: %v", err)
+		return
+	}
 	splitted, err := splitAoutput(string(output))
-	convertedOutput, err := convertOutput(splitted)
+	if err != nil {
+		log.Printf("Error: %v", err)
+		return
+	}
+	convertedOutput, err := convertOutput(splitted, e.replacer)
+	if err != nil {
+		log.Printf("Error: %v", err)
+		return
+	}
 	createMetrics(e, convertedOutput)
 
 	e.duration.Set(float64(time.Now().UnixNano()-now) / 1000000000)
 
-	e.Waitgroup.Wait()
 	if err != nil {
 		log.Printf("could not retrieve ipmi metrics: %v", err)
-		return
 	}
 }
