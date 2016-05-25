@@ -37,9 +37,9 @@ func convertOutput(first []string, replacer *strings.Replacer) (currentMetric me
 	return currentMetric, err
 }
 
-func splitIpmiSensorOutput(output string, replacer *strings.Replacer) (metrics []metric, err error) {
+func splitIpmiSensorOutput(commandOutput string, replacer *strings.Replacer) (metrics []metric, err error) {
 
-	r := csv.NewReader(strings.NewReader(output))
+	r := csv.NewReader(strings.NewReader(commandOutput))
 	r.Comma = '|'
 	r.Comment = '#'
 
@@ -53,7 +53,7 @@ func splitIpmiSensorOutput(output string, replacer *strings.Replacer) (metrics [
 		}
 		result, err := convertOutput(record, replacer)
 		if err != nil {
-			return metrics, fmt.Errorf("could not convert csv output : %v", err)
+			return metrics, fmt.Errorf("could not convert csv commandOutput : %v", err)
 		}
 		metrics = append(metrics, result)
 	}

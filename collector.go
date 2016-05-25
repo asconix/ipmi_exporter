@@ -10,21 +10,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-/*
-
-	Allgemeine Tips:
-		* Der Typ Exporter und seine Methoden würde ich der Übersicht halber gruppieren. Typische Anordnung: Typ, Konstruktor, Methoden
-		* Das Parsen würde ich noch ein bisschen auslagern und ein paar Type einführen. Type wie [][]string sagen sehr wenig aus.
-
-*/
-
-type metric struct {
-	metricsname string
-	value       float64
-	unit        string
-	addr        string
-}
-
 // Exporter implements the prometheus.Collector interface. It exposes the metrics
 // of a ipmi node.
 type Exporter struct {
@@ -104,16 +89,12 @@ func (e *Exporter) collect() {
 		log.Printf("Error: %v", err)
 		return
 	}
-	splitted, err := splitAoutput(string(output))
+	convertedOutput, err := splitIpmiSensorOutput(string(output), e.replacer)
 	if err != nil {
 		log.Printf("Error: %v", err)
 		return
 	}
-	convertedOutput, err := convertOutput(splitted, e.replacer)
-	if err != nil {
-		log.Printf("Error: %v", err)
-		return
-	}
+
 	createMetrics(e, convertedOutput)
 
 	e.duration.Set(float64(time.Now().UnixNano()-now) / 1000000000)
